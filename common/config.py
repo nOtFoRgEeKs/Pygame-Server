@@ -3,7 +3,7 @@ import socket
 
 class ServerConfig:
     HOSTNAME = socket.gethostname()
-    IP_ADDRESS = socket.gethostbyname(HOSTNAME)
+    IP_ADDRESS = 'localhost'  # socket.gethostbyname(HOSTNAME)
     PORT = 5555
     MAX_CONNECTION = 2
     MAX_LOBBY_PLAYER = 2

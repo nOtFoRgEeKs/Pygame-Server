@@ -1,5 +1,9 @@
 import logging
 import logging.config
+import os
+
+if not os.path.isdir('logs'):
+    os.mkdir('logs')
 
 logging.config.fileConfig(fname='logger/.conf', disable_existing_loggers=True)
 

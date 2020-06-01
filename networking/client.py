@@ -6,10 +6,10 @@ from threading import Lock
 from typing import Dict, Optional, List
 
 from common import ClientConfig, ServerUtils, ServerConfig, UniqueId
-from lobby import GameLobby
 from logger import Logger
-from protocol import ClientMessage, ServerReply
-from protocol import ClientRole, Status, Command, GameData
+from networking import GameLobby
+from networking.protocol import ClientMessage, ServerReply
+from networking.protocol import ClientRole, Status, Command
 
 
 class GameClient:
@@ -29,7 +29,7 @@ class GameClient:
         self._lobby_id = None
         self._role: ClientRole = ClientRole.NOT_ASSIGNED
         self._running = False
-        self._game_data_queue: Queue = Queue(maxsize=ClientConfig.MAX_DATA_QUEUE_SIZE)
+        self._data_queue: Queue = Queue(maxsize=ClientConfig.MAX_DATA_QUEUE_SIZE)
         self._lock = Lock()
 
         GameClient.CLIENT_POOL[self._id] = self
@@ -55,14 +55,14 @@ class GameClient:
             received_msg: ClientMessage = self.receive_message()
             if not received_msg:
                 break
-            self._logger.info('Received-> ', received_msg)
+            self._logger.debug('Received-> ', received_msg)
 
             if received_msg.command == Command.DISCONNECT:
                 self._logger.info('Request to disconnect')
                 break
 
             reply_msg = command_mapper[received_msg.command](received_msg)
-            self._logger.info('Sending-> ', reply_msg)
+            self._logger.debug('Sending-> ', reply_msg)
             if not self.send_message(reply_msg):
                 break
         self.stop_client_connection()
@@ -91,13 +91,11 @@ class GameClient:
         self._in_lobby = True
         self._lobby_id = lobby.id
 
-        game_data = GameData(id=self._id, role=self._role)
-        reply_msg.game_data_list.append(game_data)
+        reply_msg.additional_info = self._role
 
         return reply_msg
 
     def _find_lobby_ready(self, received_msg: ClientMessage) -> ServerReply:
-        self._logger.info('Query if lobby ready')
         reply_msg = ServerReply()
         if GameLobby.LOBBY_POOL[self._lobby_id].has_space():
             reply_msg.status = Status.IN_LOBBY_WAITING
@@ -106,43 +104,48 @@ class GameClient:
         return reply_msg
 
     def _enqueue_data(self, received_msg: ClientMessage) -> ServerReply:
-        self._logger.info(f'Enqueue data: {received_msg.game_data}')
+        # self._logger.info(f'Enqueue data: {received_msg.data}')
         reply_msg = ServerReply()
         if GameLobby.LOBBY_POOL[self._lobby_id].has_space():
             GameLobby.LOBBY_POOL[self._lobby_id].remove_client(self.id)
             reply_msg.status = Status.LOBBY_PLAYER_DISCONNECTED
+            self._in_lobby = False
         else:
-            self.push_data_queue(received_msg.game_data)
+            self.push_data_queue(received_msg.data)
             reply_msg.status = Status.COMMAND_SUCCESS
         return reply_msg
 
     def _dequeue_data(self, received_msg: ClientMessage) -> ServerReply:
-        self._logger.info('Dequeue data')
+        # self._logger.info('Dequeue data')
         reply_msg = ServerReply()
         if GameLobby.LOBBY_POOL[self._lobby_id].has_space():
             GameLobby.LOBBY_POOL[self._lobby_id].remove_client(self.id)
             reply_msg.status = Status.LOBBY_PLAYER_DISCONNECTED
+            self._in_lobby = False
         else:
-            reply_msg.append_game_data(*self.pop_data_from_lobby_clients())
+            reply_msg.append_data(*self.pop_data_from_lobby_clients())
             reply_msg.status = Status.COMMAND_SUCCESS
         return reply_msg
 
     def _exchange_data(self, received_msg: ClientMessage) -> ServerReply:
-        self._logger.info(f'Enqueue data: {received_msg.game_data}')
+        # self._logger.info(f'Enqueue data: {received_msg.data}')
         reply_msg = ServerReply()
         if GameLobby.LOBBY_POOL[self._lobby_id].has_space():
             GameLobby.LOBBY_POOL[self._lobby_id].remove_client(self.id)
             reply_msg.status = Status.LOBBY_PLAYER_DISCONNECTED
+            self._in_lobby = False
         else:
-            self.push_data_queue(received_msg.game_data)
-            reply_msg.append_game_data(*self.pop_data_from_lobby_clients())
+            self.push_data_queue(received_msg.data)
+            reply_msg.append_data(*self.pop_data_from_lobby_clients())
             reply_msg.status = Status.COMMAND_SUCCESS
         return reply_msg
 
     def _leave_from_lobby(self, received_msg: ClientMessage) -> ServerReply:
         self._logger.info('Request to leave lobby')
-        GameLobby.LOBBY_POOL[self._lobby_id].remove_client(self.id)
-        return ServerReply(status=Status.COMMAND_SUCCESS)
+        if self._in_lobby:
+            GameLobby.LOBBY_POOL[self._lobby_id].remove_client(self.id)
+            return ServerReply(status=Status.COMMAND_SUCCESS)
+        return ServerReply(status=Status.BAD_COMMAND)
 
     def _who_in_lobby(self, received_msg: ClientMessage) -> ServerReply:
         reply_msg = ServerReply()
@@ -159,25 +162,25 @@ class GameClient:
 
     def clear_data_queue(self):
         with self._lock:
-            self._game_data_queue.queue.clear()
+            self._data_queue.queue.clear()
 
-    def push_data_queue(self, game_data: GameData):
+    def push_data_queue(self, data: bytes):
         with self._lock:
-            self._game_data_queue.put_nowait(game_data)
+            self._data_queue.put_nowait(data)
 
-    def pop_data_queue(self) -> GameData:
+    def pop_data_queue(self) -> bytes:
         with self._lock:
-            game_data = self._game_data_queue.get_nowait()
-        return game_data
+            data = self._data_queue.get_nowait()
+        return data
 
-    def pop_data_from_lobby_clients(self) -> List[GameData]:
+    def pop_data_from_lobby_clients(self) -> List[bytes]:
         return [GameClient.CLIENT_POOL[client_id].pop_data_queue() for client_id in
                 GameLobby.LOBBY_POOL[self._lobby_id].clients if
                 client_id != self._id and not GameClient.CLIENT_POOL[client_id].is_data_queue_empty()]
 
     def is_data_queue_empty(self) -> bool:
         with self._lock:
-            empty = self._game_data_queue.empty()
+            empty = self._data_queue.empty()
         return empty
 
     def send_message(self, message: ServerReply) -> bool:

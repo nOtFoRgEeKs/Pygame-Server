@@ -2,7 +2,7 @@ import socket
 from typing import Optional
 
 from common import ServerConfig
-from lobby import GameClient
+from networking import GameClient
 from logger import Logger
 
 
